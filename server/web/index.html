@@ -1,0 +1,389 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<title>EV 차계부</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<style>
+  :root{
+    --plane:#0d0d0d; --surface:#1a1a19; --surface-2:#232322;
+    --ink:#ffffff; --ink-2:#c3c2b7; --muted:#898781;
+    --grid:#2c2c2a; --axis:#383835; --hairline:rgba(255,255,255,.10);
+    --series:#3987e5; --series-2:#d95926;
+    --good:#0ca30c; --warn:#fab219; --crit:#d03b3b;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;background:var(--plane);color:var(--ink);
+    font:14px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif;-webkit-text-size-adjust:100%}
+  a{color:var(--series)}
+  .wrap{max-width:1080px;margin:0 auto;padding:14px}
+  header{display:flex;align-items:baseline;gap:12px;padding:6px 2px 14px}
+  header h1{font-size:17px;margin:0;font-weight:600}
+  header .sub{color:var(--muted);font-size:12px}
+  header .spacer{flex:1}
+  button{font:inherit;cursor:pointer}
+  .btn{background:var(--surface-2);color:var(--ink);border:1px solid var(--hairline);
+    border-radius:10px;padding:8px 14px}
+  .btn:hover{background:#2c2c2a}
+  .card{background:var(--surface);border:1px solid var(--hairline);border-radius:16px;
+    padding:16px;margin-bottom:12px}
+  .card h2{font-size:13px;color:var(--ink-2);margin:0 0 12px;font-weight:500;letter-spacing:.02em}
+
+  .stats{display:grid;grid-template-columns:repeat(2,1fr);gap:16px 8px}
+  @media(min-width:640px){.stats{grid-template-columns:repeat(4,1fr)}}
+  .stat .label{color:var(--muted);font-size:12px}
+  .stat .value{font-size:22px;margin-top:2px}
+
+  .tabs{display:flex;gap:6px;margin:2px 0 12px}
+  .tab{background:none;border:none;color:var(--muted);padding:8px 12px;border-radius:10px;
+    font-size:14px}
+  .tab[aria-selected=true]{color:var(--ink);background:var(--surface-2)}
+
+  .row{display:flex;gap:12px;align-items:center;padding:12px 10px;border-radius:12px;
+    border:1px solid transparent;cursor:pointer}
+  .row+.row{border-top:1px solid var(--grid)}
+  .row:hover{background:var(--surface-2)}
+  .row[aria-current=true]{border-color:var(--series);background:var(--surface-2)}
+  .row .when{color:var(--muted);font-size:12px;min-width:0}
+  .row .main{flex:1;min-width:0}
+  .row .big{font-size:16px}
+  .row .sub{color:var(--muted);font-size:12px;margin-top:2px;
+    overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .row .right{text-align:right;font-size:15px;white-space:nowrap}
+  .pill{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--ink-2)}
+  .dot{width:8px;height:8px;border-radius:50%;display:inline-block}
+
+  #map{height:320px;border-radius:12px;overflow:hidden;background:var(--surface-2)}
+  @media(min-width:640px){#map{height:420px}}
+  .leaflet-container{background:#1a1a19}
+  .legend{display:flex;flex-wrap:wrap;gap:10px;margin-top:10px;color:var(--muted);font-size:12px}
+  .legend i{width:16px;height:3px;border-radius:2px;display:inline-block;margin-right:5px;
+    vertical-align:middle}
+
+  .empty{color:var(--muted);text-align:center;padding:28px 10px;line-height:1.7}
+  .chart-wrap{overflow-x:auto}
+  svg{display:block}
+
+  /* 로그인 */
+  .login{max-width:380px;margin:12vh auto;padding:0 16px}
+  .login .card{padding:22px}
+  .login input{width:100%;padding:12px;border-radius:10px;background:var(--surface-2);
+    color:var(--ink);border:1px solid var(--hairline);font:inherit;margin-top:8px}
+  .login .btn{width:100%;margin-top:12px;background:var(--series);border-color:transparent;
+    color:#fff;font-weight:500}
+  .err{color:var(--crit);font-size:13px;margin-top:10px;min-height:18px}
+  .hide{display:none!important}
+</style>
+</head>
+<body>
+
+<div id="login" class="login hide">
+  <div class="card">
+    <h2 style="font-size:15px;color:var(--ink)">EV 차계부</h2>
+    <p style="color:var(--muted);font-size:13px;margin:0 0 4px">접속 암호를 입력하세요.</p>
+    <input id="token" type="password" autocomplete="current-password" placeholder="토큰">
+    <button class="btn" id="loginBtn">들어가기</button>
+    <div class="err" id="loginErr"></div>
+  </div>
+</div>
+
+<div id="app" class="wrap hide">
+  <header>
+    <h1>EV 차계부</h1>
+    <span class="sub" id="deviceInfo"></span>
+    <span class="spacer"></span>
+    <button class="btn" id="reload">새로고침</button>
+  </header>
+
+  <div class="card">
+    <h2>요약</h2>
+    <div class="stats" id="stats"></div>
+  </div>
+
+  <div class="card">
+    <h2>최근 주행 전비 (km/kWh)</h2>
+    <div class="chart-wrap"><div id="chart"></div></div>
+  </div>
+
+  <div class="card">
+    <h2 id="mapTitle">주행 경로</h2>
+    <div id="map"></div>
+    <div class="legend" id="legend"></div>
+  </div>
+
+  <div class="card">
+    <div class="tabs" role="tablist">
+      <button class="tab" role="tab" id="tabTrips" aria-selected="true">주행</button>
+      <button class="tab" role="tab" id="tabCharges" aria-selected="false">충전</button>
+    </div>
+    <div id="list"></div>
+  </div>
+
+  <p style="color:var(--muted);font-size:12px;text-align:center;padding:6px 0 24px">
+    지도 &copy; OpenStreetMap 기여자 ·
+    <a href="#" id="logout">로그아웃</a>
+  </p>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
+<script>
+"use strict";
+
+// 속도 구간별 색: 한 가지 색(파랑)의 밝기 단계. 빠를수록 진하게.
+var SPEED_BUCKETS = [
+  {max: 30,  color:"#9ec5f4", label:"~30"},
+  {max: 60,  color:"#5598e7", label:"30–60"},
+  {max: 90,  color:"#2a78d6", label:"60–90"},
+  {max: 120, color:"#1c5cab", label:"90–120"},
+  {max: 1e9, color:"#0d366b", label:"120~"}
+];
+function speedColor(v){
+  for (var i=0;i<SPEED_BUCKETS.length;i++) if (v <= SPEED_BUCKETS[i].max) return SPEED_BUCKETS[i].color;
+  return SPEED_BUCKETS[SPEED_BUCKETS.length-1].color;
+}
+
+var el = function(id){ return document.getElementById(id); };
+var state = { tab:"trips", trips:[], charges:[], selected:null, map:null, layer:null };
+
+// ------------------------------------------------------------ 서식
+function nf(v, d){ return (v===null||v===undefined||isNaN(v)) ? "—" : Number(v).toFixed(d===undefined?1:d); }
+function won(v){ return (v===null||v===undefined) ? "—" : Math.round(v).toLocaleString("ko-KR")+"원"; }
+function dt(ms){
+  var d = new Date(ms), day=["일","월","화","수","목","금","토"][d.getDay()];
+  return (d.getMonth()+1)+"월 "+d.getDate()+"일 ("+day+") "
+    + String(d.getHours()).padStart(2,"0")+":"+String(d.getMinutes()).padStart(2,"0");
+}
+function dshort(ms){ var d=new Date(ms); return (d.getMonth()+1)+"/"+d.getDate(); }
+function dur(sec){
+  if (sec==null || sec<0) return "—";
+  var h=Math.floor(sec/3600), m=Math.floor((sec%3600)/60);
+  return h>0 ? h+"시간 "+m+"분" : (m>0 ? m+"분" : sec+"초");
+}
+function effOf(t){
+  if (!t || !(t.used_wh>0) || !(t.distance_m>0)) return null;
+  return (t.distance_m/1000)/(t.used_wh/1000);
+}
+
+// ------------------------------------------------------------ 통신
+function api(path, opts){
+  return fetch(path, Object.assign({credentials:"same-origin"}, opts||{})).then(function(r){
+    if (r.status === 401) { showLogin(); throw new Error("unauthorized"); }
+    if (!r.ok) throw new Error("HTTP "+r.status);
+    return r.json();
+  });
+}
+
+function showLogin(){ el("login").classList.remove("hide"); el("app").classList.add("hide"); }
+function showApp(){ el("login").classList.add("hide"); el("app").classList.remove("hide"); }
+
+el("loginBtn").onclick = function(){
+  var t = el("token").value.trim();
+  if (!t) return;
+  el("loginErr").textContent = "";
+  fetch("/login", {method:"POST", credentials:"same-origin",
+      headers:{"Content-Type":"application/json"}, body: JSON.stringify({token:t})})
+    .then(function(r){
+      if (!r.ok) throw new Error("토큰이 맞지 않습니다.");
+      el("token").value = "";
+      showApp(); load();
+    })
+    .catch(function(e){ el("loginErr").textContent = e.message; });
+};
+el("token").addEventListener("keydown", function(e){ if (e.key==="Enter") el("loginBtn").click(); });
+el("logout").onclick = function(e){
+  e.preventDefault();
+  fetch("/logout", {method:"POST", credentials:"same-origin"}).then(showLogin);
+};
+el("reload").onclick = function(){ load(); };
+
+// ------------------------------------------------------------ 화면
+function renderStats(s){
+  var items = [
+    ["이번 달 주행", nf(s.month_km)+" km"],
+    ["이번 달 충전비", won(s.month_cost)],
+    ["평균 전비", s.avg_efficiency ? nf(s.avg_efficiency)+" km/kWh" : "—"],
+    ["총 주행거리", nf(s.total_km)+" km"]
+  ];
+  el("stats").innerHTML = items.map(function(it){
+    return '<div class="stat"><div class="label">'+it[0]+'</div><div class="value">'+it[1]+'</div></div>';
+  }).join("");
+  el("deviceInfo").textContent = "주행 "+s.trip_count+"건 · 충전 "+s.charge_count+"건";
+}
+
+// 계열이 하나뿐이라 범례 없이 제목이 이름을 대신하고, 값은 마지막 점에만 붙입니다.
+function renderChart(trips){
+  var data = trips.filter(function(t){ return effOf(t)!==null && t.distance_m>500; })
+                  .slice(0,12).reverse();
+  var box = el("chart");
+  if (data.length < 2){
+    box.innerHTML = '<div class="empty">주행이 2회 이상 쌓이면 전비 추이가 표시됩니다.</div>';
+    return;
+  }
+  var W = Math.max(320, Math.min(1000, box.clientWidth || 640)), H = 200;
+  var L = 44, R = 52, T = 16, B = 26;
+  var vals = data.map(effOf);
+  var min = Math.min.apply(null, vals), max = Math.max.apply(null, vals);
+  var avg = vals.reduce(function(a,b){return a+b;},0)/vals.length;
+  var span = Math.max(0.6, max-min), lo = Math.max(0, min-span*0.25), hi = max+span*0.25;
+  if (hi-lo < 0.4) hi = lo+0.4;
+  var x = function(i){ return L + (W-L-R) * (data.length===1?0.5:i/(data.length-1)); };
+  var y = function(v){ return T + (H-T-B) * (hi-v)/(hi-lo); };
+
+  var g = "";
+  for (var i=0;i<=4;i++){
+    var yy = T + (H-T-B)*i/4, vv = hi - (hi-lo)*i/4;
+    g += '<line x1="'+L+'" y1="'+yy+'" x2="'+(W-R)+'" y2="'+yy+'" stroke="var(--grid)" stroke-width="1"/>'
+      +  '<text x="0" y="'+(yy+4)+'" fill="var(--muted)" font-size="10">'+vv.toFixed(1)+'</text>';
+  }
+  var line = data.map(function(t,i){ return (i?"L":"M")+x(i)+" "+y(effOf(t)); }).join(" ");
+  var area = "M"+x(0)+" "+(H-B)+" "+data.map(function(t,i){ return "L"+x(i)+" "+y(effOf(t)); }).join(" ")
+           + " L"+x(data.length-1)+" "+(H-B)+" Z";
+  var dots = data.map(function(t,i){
+    return '<circle cx="'+x(i)+'" cy="'+y(effOf(t))+'" r="4" fill="var(--series)" '
+         + 'stroke="var(--surface)" stroke-width="2"><title>'+dshort(t.start_ts)+" · "
+         + nf(effOf(t),1)+' km/kWh</title></circle>';
+  }).join("");
+
+  box.innerHTML =
+    '<svg width="'+W+'" height="'+H+'" role="img" aria-label="최근 주행 전비 추이">'
+    + '<defs><linearGradient id="fade" x1="0" y1="0" x2="0" y2="1">'
+    + '<stop offset="0" stop-color="#3987e5" stop-opacity=".25"/>'
+    + '<stop offset="1" stop-color="#3987e5" stop-opacity="0"/></linearGradient></defs>'
+    + g
+    + '<line x1="'+L+'" y1="'+(H-B)+'" x2="'+(W-R)+'" y2="'+(H-B)+'" stroke="var(--axis)"/>'
+    + '<path d="'+area+'" fill="url(#fade)"/>'
+    + '<line x1="'+L+'" y1="'+y(avg)+'" x2="'+(W-R)+'" y2="'+y(avg)
+      + '" stroke="var(--muted)" stroke-width="1" stroke-dasharray="4 4"/>'
+    + '<text x="'+(L+4)+'" y="'+(y(avg)-5)+'" fill="var(--muted)" font-size="10">평균 '+nf(avg)+'</text>'
+    + '<path d="'+line+'" fill="none" stroke="var(--series)" stroke-width="2" '
+      + 'stroke-linecap="round" stroke-linejoin="round"/>'
+    + dots
+    + '<text x="'+(x(data.length-1)+9)+'" y="'+(y(vals[vals.length-1])+4)
+      + '" fill="var(--ink)" font-size="12">'+nf(vals[vals.length-1])+'</text>'
+    + '<text x="'+L+'" y="'+(H-8)+'" fill="var(--muted)" font-size="10">'+dshort(data[0].start_ts)+'</text>'
+    + '<text x="'+(W-R)+'" y="'+(H-8)+'" fill="var(--muted)" font-size="10" text-anchor="end">'
+      + dshort(data[data.length-1].start_ts)+'</text>'
+    + '</svg>';
+}
+
+function renderList(){
+  var box = el("list");
+  el("tabTrips").setAttribute("aria-selected", state.tab==="trips");
+  el("tabCharges").setAttribute("aria-selected", state.tab==="charges");
+
+  if (state.tab === "trips"){
+    if (!state.trips.length){
+      box.innerHTML = '<div class="empty">아직 주행 기록이 없습니다.<br>앱에서 기록을 시작하면 여기로 올라옵니다.</div>';
+      return;
+    }
+    box.innerHTML = state.trips.map(function(t){
+      var e = effOf(t);
+      return '<div class="row" data-uid="'+t.uid+'"'
+        + (state.selected===t.uid ? ' aria-current="true"' : '') + '>'
+        + '<div class="main"><div class="big">'+nf(t.distance_m/1000)+' km</div>'
+        + '<div class="sub">'+dt(t.start_ts)+' · '+dur(t.total_s)
+        + ' · 평균 '+nf(t.avg_kmh,0)+' km/h'
+        + (t.has_route ? ' · 경로 있음' : '')+'</div></div>'
+        + '<div class="right">'+(e ? nf(e)+'<span style="color:var(--muted);font-size:12px"> km/kWh</span>' : '—')
+        + '</div></div>';
+    }).join("");
+    Array.prototype.forEach.call(box.querySelectorAll(".row"), function(r){
+      r.onclick = function(){ selectTrip(r.getAttribute("data-uid")); };
+    });
+  } else {
+    if (!state.charges.length){
+      box.innerHTML = '<div class="empty">아직 충전 기록이 없습니다.</div>';
+      return;
+    }
+    box.innerHTML = state.charges.map(function(c){
+      var dc = c.kind === "DC";
+      return '<div class="row" style="cursor:default">'
+        + '<div class="main"><div class="big">'+nf(c.added_wh/1000)+' kWh</div>'
+        + '<div class="sub">'+dt(c.start_ts)+' · '
+        + '<span class="pill"><span class="dot" style="background:'
+        + (dc ? "var(--series-2)" : "var(--series)")+'"></span>'
+        + (dc ? "급속 (DC)" : "완속 (AC)")+'</span>'
+        + (c.max_kw>0 ? ' · 최대 '+nf(c.max_kw)+' kW' : '')
+        + (c.manual ? ' · 직접 입력' : '')+'</div></div>'
+        + '<div class="right">'+won(c.cost)+'</div></div>';
+    }).join("");
+  }
+}
+
+function ensureMap(){
+  if (state.map) return state.map;
+  state.map = L.map("map", {zoomControl:true, attributionControl:true}).setView([37.5665,126.9780], 11);
+  L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    maxZoom: 19, attribution: '&copy; OpenStreetMap'
+  }).addTo(state.map);
+  el("legend").innerHTML = '<span style="color:var(--ink-2)">속도(km/h)</span>'
+    + SPEED_BUCKETS.map(function(b){
+        return '<span><i style="background:'+b.color+'"></i>'+b.label+'</span>'; }).join("");
+  return state.map;
+}
+
+function selectTrip(uid){
+  state.selected = uid;
+  renderList();
+  api("/api/v1/trips/"+encodeURIComponent(uid)).then(function(t){
+    var map = ensureMap();
+    if (state.layer){ map.removeLayer(state.layer); state.layer = null; }
+    var pts = t.points || [];
+    el("mapTitle").textContent = "주행 경로 · " + dt(t.start_ts) + " · " + nf(t.distance_m/1000) + " km";
+    if (pts.length < 2){
+      el("mapTitle").textContent += " (경로 기록 없음)";
+      return;
+    }
+    var group = L.layerGroup();
+    for (var i=1;i<pts.length;i++){
+      var a = pts[i-1], b = pts[i];
+      var v = b[3] >= 0 ? b[3] : 0;
+      L.polyline([[a[1],a[2]],[b[1],b[2]]], {
+        color: speedColor(v), weight: 5, opacity: 0.95, lineCap:"round"
+      }).addTo(group);
+    }
+    L.circleMarker([pts[0][1], pts[0][2]], {radius:6, color:"#fff", weight:2,
+      fillColor:"#0ca30c", fillOpacity:1}).bindTooltip("출발").addTo(group);
+    var last = pts[pts.length-1];
+    L.circleMarker([last[1], last[2]], {radius:6, color:"#fff", weight:2,
+      fillColor:"#d03b3b", fillOpacity:1}).bindTooltip("도착").addTo(group);
+    group.addTo(map);
+    state.layer = group;
+    var lat = pts.map(function(p){return p[1];}), lon = pts.map(function(p){return p[2];});
+    map.fitBounds([[Math.min.apply(null,lat), Math.min.apply(null,lon)],
+                   [Math.max.apply(null,lat), Math.max.apply(null,lon)]], {padding:[24,24]});
+    setTimeout(function(){ map.invalidateSize(); }, 100);
+  }).catch(function(){});
+}
+
+el("tabTrips").onclick = function(){ state.tab="trips"; renderList(); };
+el("tabCharges").onclick = function(){ state.tab="charges"; renderList(); };
+
+function load(){
+  Promise.all([
+    api("/api/v1/stats"),
+    api("/api/v1/trips?limit=300"),
+    api("/api/v1/charges?limit=300")
+  ]).then(function(res){
+    renderStats(res[0]);
+    state.trips = res[1].trips || [];
+    state.charges = res[2].charges || [];
+    renderChart(state.trips);
+    renderList();
+    ensureMap();
+    var first = state.trips.filter(function(t){ return t.has_route; })[0];
+    if (first) selectTrip(first.uid);
+    else el("mapTitle").textContent = "주행 경로 (아직 경로가 올라온 주행이 없습니다)";
+    setTimeout(function(){ if (state.map) state.map.invalidateSize(); }, 120);
+  }).catch(function(){});
+}
+
+window.addEventListener("resize", function(){ renderChart(state.trips); });
+
+// 쿠키가 살아 있으면 바로 들어가고, 아니면 로그인 화면
+api("/api/v1/stats").then(function(){ showApp(); load(); }).catch(function(){});
+</script>
+</body>
+</html>
