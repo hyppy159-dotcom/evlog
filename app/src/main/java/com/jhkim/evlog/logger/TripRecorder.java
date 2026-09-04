@@ -6,7 +6,11 @@ import android.util.Log;
 import com.jhkim.evlog.Prefs;
 import com.jhkim.evlog.db.Db;
 import com.jhkim.evlog.db.Trip;
+import com.jhkim.evlog.db.TripPoint;
 import com.jhkim.evlog.vehicle.VehicleSnapshot;
+
+import java.util.ArrayList;
+import java.util.List;
 
 /** 주행 시작·종료를 스스로 판단해 기록합니다. */
 public class TripRecorder {
@@ -23,6 +27,15 @@ public class TripRecorder {
     private static final long END_AFTER_STOP_GPS_MS = 5 * 60_000L;
     /** 한 번에 인정하는 최대 시간 간격(초) — 절전 등으로 오래 끊긴 구간은 버립니다. */
     private static final double MAX_DT_S = 12.0;
+
+    // --- 경로 기록 ---
+    /** 경로점 사이 최소 간격 */
+    private static final double POINT_MIN_M = 20;
+    private static final long POINT_MIN_MS = 3000;
+    /** 서 있어도 이 시간이 지나면 한 점 남깁니다(정차 구간을 알아보기 위해) */
+    private static final long POINT_FORCE_MS = 20000;
+    /** 아주 긴 주행에서도 저장이 터지지 않게 상한 */
+    private static final int POINT_MAX = 6000;
 
     private final Context ctx;
     private final Db db;
@@ -45,6 +58,10 @@ public class TripRecorder {
 
     private long stoppedSince;
     private boolean sawCarData;
+
+    private final List<TripPoint> route = new ArrayList<>();
+    private long lastPointTs;
+    private double lastPointLat, lastPointLon;
 
     public TripRecorder(Context ctx) {
         this.ctx = ctx.getApplicationContext();
@@ -109,6 +126,7 @@ public class TripRecorder {
             endLat = s.lat;
             endLon = s.lon;
         }
+        maybeAddPoint(s);
 
         if (kmh > maxKmh) maxKmh = kmh;
         if (kmh >= STOP_KMH) movingMs += dt * 1000.0;
@@ -157,6 +175,8 @@ public class TripRecorder {
         startWh = s.hasBatteryWh ? s.batteryWh : -1;
         lastSoc = startSoc;
         lastWh = startWh;
+        route.clear();
+        lastPointTs = 0;
         if (s.hasLocation) {
             startLat = s.lat;
             startLon = s.lon;
@@ -164,6 +184,7 @@ public class TripRecorder {
             endLon = s.lon;
             lastLat = s.lat;
             lastLon = s.lon;
+            addPoint(s);
         } else {
             lastLat = Double.NaN;
         }
@@ -217,7 +238,7 @@ public class TripRecorder {
         t.source = sawCarData ? "car" : "gps";
         t.note = "";
 
-        db.insertTrip(t);
+        db.insertTrip(t, route);
         Log.i(TAG, "주행 저장: " + String.format("%.1fkm", t.km()));
         reset();
         LiveState.bumpData();
@@ -232,6 +253,41 @@ public class TripRecorder {
         startWh = lastWh = -1;
         stoppedSince = 0;
         lastLat = Double.NaN;
+        route.clear();
+        lastPointTs = 0;
+    }
+
+    /**
+     * 경로점을 남길지 판단합니다. 너무 촘촘하면 데이터만 커지고,
+     * 너무 성기면 길 모양이 뭉개져서 거리·시간을 함께 봅니다.
+     */
+    private void maybeAddPoint(VehicleSnapshot s) {
+        if (!s.hasLocation || !Prefs.routeEnabled(ctx)) return;
+        if (route.size() >= POINT_MAX) return;
+        if (s.accuracyM > 60f) return;
+        if (route.isEmpty()) {
+            addPoint(s);
+            return;
+        }
+        long dt = s.ts - lastPointTs;
+        double d = distanceBetween(lastPointLat, lastPointLon, s.lat, s.lon);
+        if ((dt >= POINT_MIN_MS && d >= POINT_MIN_M) || dt >= POINT_FORCE_MS) {
+            addPoint(s);
+        }
+    }
+
+    private void addPoint(VehicleSnapshot s) {
+        route.add(new TripPoint(s.ts, s.lat, s.lon,
+                s.hasSpeed ? s.speedKmh : -1,
+                s.hasSoc ? s.socPct : -1));
+        lastPointTs = s.ts;
+        lastPointLat = s.lat;
+        lastPointLon = s.lon;
+    }
+
+    /** 이번 주행에서 지금까지 기록된 경로점 수. */
+    public int routePointCount() {
+        return route.size();
     }
 
     /** 하버사인 거리(m). */
