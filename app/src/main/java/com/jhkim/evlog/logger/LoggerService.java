@@ -17,6 +17,7 @@ import androidx.core.app.NotificationCompat;
 import androidx.core.app.ServiceCompat;
 
 import com.jhkim.evlog.App;
+import com.jhkim.evlog.DriveActivity;
 import com.jhkim.evlog.MainActivity;
 import com.jhkim.evlog.Prefs;
 import com.jhkim.evlog.R;
@@ -124,6 +125,7 @@ public class LoggerService extends Service {
         LiveState.tripActive = tripRecorder.isActive();
         LiveState.tripKm = tripRecorder.currentKm();
         LiveState.tripElapsedS = tripRecorder.elapsedS();
+        LiveState.tripEfficiency = tripRecorder.currentEfficiency();
         LiveState.chargeActive = chargeRecorder.isActive();
 
         long now = System.currentTimeMillis();
@@ -167,7 +169,10 @@ public class LoggerService extends Service {
     }
 
     private Notification buildNotification(String title, String text) {
-        Intent open = new Intent(this, MainActivity.class)
+        // 주행·충전 중에는 알림을 눌렀을 때 주행 중에도 볼 수 있는 모니터 화면으로 갑니다.
+        Class<?> target = (LiveState.tripActive || LiveState.chargeActive)
+                ? DriveActivity.class : MainActivity.class;
+        Intent open = new Intent(this, target)
                 .setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
         PendingIntent openPi = PendingIntent.getActivity(this, 0, open,
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
