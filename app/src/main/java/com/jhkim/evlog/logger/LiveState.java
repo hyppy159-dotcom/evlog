@@ -10,6 +10,10 @@ public final class LiveState {
 
     public static volatile boolean serviceRunning;
     public static volatile String sourceLabel = "대기 중";
+    /** 차량 API에 붙었는지 */
+    public static volatile boolean carConnected;
+    /** 배터리를 못 읽을 때의 사유(차량에서만 의미 있음) */
+    public static volatile String carBatteryStatus = "";
 
     public static volatile boolean tripActive;
     public static volatile double tripKm;
