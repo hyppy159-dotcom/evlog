@@ -6,6 +6,8 @@ public class Charge {
     public static final String DC = "DC";
 
     public long id;
+    /** 서버와 맞추는 고유 id. 저장할 때 자동으로 붙습니다. */
+    public String uid = "";
     public long startTs;
     public long endTs;
     public double startSoc = -1;
@@ -22,6 +24,8 @@ public class Charge {
     /** 사용자가 직접 입력했으면 true */
     public boolean manual;
     public String note = "";
+    /** 서버로 올라갔는지 */
+    public boolean synced;
 
     public double kwh() {
         return addedWh / 1000.0;
