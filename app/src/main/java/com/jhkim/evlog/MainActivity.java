@@ -1,12 +1,19 @@
 package com.jhkim.evlog;
 
 import android.Manifest;
+import android.content.ClipData;
+import android.content.ClipboardManager;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.graphics.Typeface;
+import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.provider.Settings;
 import android.view.Menu;
 import android.view.MenuItem;
+import android.widget.ScrollView;
+import android.widget.TextView;
 import android.widget.Toast;
 
 import androidx.annotation.NonNull;
@@ -26,6 +33,7 @@ import com.jhkim.evlog.ui.ChargesFragment;
 import com.jhkim.evlog.ui.DashboardFragment;
 import com.jhkim.evlog.ui.TripsFragment;
 import com.jhkim.evlog.util.CsvExport;
+import com.jhkim.evlog.vehicle.CarApiSource;
 
 import java.io.File;
 import java.util.ArrayList;
@@ -38,17 +46,10 @@ public class MainActivity extends AppCompatActivity {
     private static final int REQ_CAR = 102;
 
     /**
-     * 차량 데이터 권한. AAOS에서는 위험 권한이라 실행 중에 사용자 동의를 받아야 합니다.
-     * 휴대폰에는 이 권한 자체가 없으므로 차량에서만 요청합니다.
+     * 차량 데이터 권한은 AAOS에서 위험 권한이라 실행 중에 사용자 동의를 받아야 합니다.
+     * 목록은 {@link CarApiSource#CAR_PERMISSIONS} 하나로 관리합니다.
      */
-    private static final String[] CAR_PERMISSIONS = {
-            "android.car.permission.CAR_ENERGY",
-            "android.car.permission.CAR_ENERGY_PORTS",
-            "android.car.permission.CAR_SPEED",
-            "android.car.permission.CAR_INFO",
-            "android.car.permission.CAR_POWERTRAIN",
-            "android.car.permission.CAR_EXTERIOR_ENVIRONMENT"
-    };
+    private static final String[] CAR_PERMISSIONS = CarApiSource.CAR_PERMISSIONS;
 
     @Override
     protected void onCreate(@Nullable Bundle savedInstanceState) {
@@ -197,7 +198,70 @@ public class MainActivity extends AppCompatActivity {
             exportCsv();
             return true;
         }
+        if (id == R.id.action_car_diag) {
+            showCarDiagnostics();
+            return true;
+        }
         return super.onOptionsItemSelected(item);
+    }
+
+    // ----------------- 차량 데이터 진단 -----------------
+
+    /** 차량 데이터가 왜 안 나오는지 앱이 스스로 점검해 보여줍니다. */
+    private void showCarDiagnostics() {
+        final Toast waiting = Toast.makeText(this, "차량 데이터를 확인하는 중…", Toast.LENGTH_SHORT);
+        waiting.show();
+        new Thread(() -> {
+            final String report = CarApiSource.diagnose(getApplicationContext());
+            runOnUiThread(() -> showReportDialog(report));
+        }, "car-diagnose").start();
+    }
+
+    private void showReportDialog(final String report) {
+        if (isFinishing()) return;
+
+        TextView tv = new TextView(this);
+        tv.setText(report);
+        tv.setTextIsSelectable(true);
+        tv.setTypeface(Typeface.MONOSPACE);
+        tv.setTextSize(12f);
+        tv.setTextColor(ContextCompat.getColor(this, R.color.ink_primary));
+        int pad = (int) (16 * getResources().getDisplayMetrics().density);
+        tv.setPadding(pad, pad, pad, pad);
+
+        ScrollView sv = new ScrollView(this);
+        sv.addView(tv);
+
+        AlertDialog.Builder b = new AlertDialog.Builder(this)
+                .setTitle("차량 데이터 진단")
+                .setView(sv)
+                .setPositiveButton("복사", (d, w) -> {
+                    ClipboardManager cm = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
+                    if (cm != null) {
+                        cm.setPrimaryClip(ClipData.newPlainText("EvLog 진단", report));
+                        Toast.makeText(this, "진단 내용을 복사했습니다.", Toast.LENGTH_SHORT).show();
+                    }
+                })
+                .setNegativeButton("닫기", null);
+
+        // 권한이 빠져 있으면 여기서 바로 다시 요청할 수 있게 합니다.
+        if (getPackageManager().hasSystemFeature(PackageManager.FEATURE_AUTOMOTIVE)
+                && !CarApiSource.hasAllPermissions(this)) {
+            b.setNeutralButton("권한 요청", (d, w) -> {
+                if (!requestCarPermissions()) openAppSettings();
+            });
+        }
+        b.show();
+    }
+
+    /** 권한을 “다시 묻지 않음”으로 막아 둔 경우를 위해 앱 정보 화면을 엽니다. */
+    private void openAppSettings() {
+        try {
+            startActivity(new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                    Uri.fromParts("package", getPackageName(), null)));
+        } catch (Exception e) {
+            Toast.makeText(this, "설정 화면을 열 수 없습니다.", Toast.LENGTH_SHORT).show();
+        }
     }
 
     private void exportCsv() {
