@@ -43,7 +43,6 @@ public class LoggerService extends Service {
     private ChargeRecorder chargeRecorder;
     private boolean running;
     private long lastNotiAt;
-    private int gpsRetryCounter;
 
     private final Runnable tick = new Runnable() {
         @Override
@@ -102,11 +101,11 @@ public class LoggerService extends Service {
     }
 
     private void step() {
-        // 나중에 권한을 허용한 경우를 위해 가끔 GPS를 다시 시도합니다.
-        if (!sources.gpsConnected() && ++gpsRetryCounter % 30 == 0 && GpsSource.hasPermission(this)) {
-            sources.retryGps();
-            LiveState.sourceLabel = sources.sourceLabel();
-        }
+        // 끊긴 GPS·차량 연결을 되살리고, 현재 출처를 화면에 반영합니다.
+        sources.tick();
+        LiveState.sourceLabel = sources.sourceLabel();
+        LiveState.carConnected = sources.carConnected();
+        LiveState.carBatteryStatus = sources.carBatteryStatus();
 
         VehicleSnapshot s = sources.read();
 
