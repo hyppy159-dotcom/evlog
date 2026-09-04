@@ -21,6 +21,7 @@ import com.jhkim.evlog.DriveActivity;
 import com.jhkim.evlog.MainActivity;
 import com.jhkim.evlog.Prefs;
 import com.jhkim.evlog.R;
+import com.jhkim.evlog.sync.SyncClient;
 import com.jhkim.evlog.vehicle.GpsSource;
 import com.jhkim.evlog.vehicle.SourceManager;
 import com.jhkim.evlog.vehicle.VehicleSnapshot;
@@ -44,6 +45,9 @@ public class LoggerService extends Service {
     private ChargeRecorder chargeRecorder;
     private boolean running;
     private long lastNotiAt;
+    /** 마지막 업로드 시각과, 그때의 기록 개수 */
+    private long lastSyncAt;
+    private int lastSyncRevision = -1;
 
     private final Runnable tick = new Runnable() {
         @Override
@@ -134,6 +138,24 @@ public class LoggerService extends Service {
             updateNotification();
             LiveState.notifyChanged();
         }
+        maybeSync(now);
+    }
+
+    /**
+     * 새 기록이 저장됐거나 마지막 시도로부터 15분이 지났으면 서버로 올립니다.
+     * 주행 중에는 올리지 않습니다 — 끝난 뒤에 한 번에 보내는 편이 낫습니다.
+     */
+    private void maybeSync(long now) {
+        if (!Prefs.syncAuto(this) || !Prefs.serverConfigured(this)) return;
+        if (LiveState.tripActive || SyncClient.isRunning()) return;
+
+        boolean newData = LiveState.dataRevision != lastSyncRevision;
+        boolean overdue = now - lastSyncAt >= 15 * 60_000L;
+        if (!newData && !overdue) return;
+
+        lastSyncRevision = LiveState.dataRevision;
+        lastSyncAt = now;
+        SyncClient.syncInBackground(this, null);
     }
 
     private void updateNotification() {
