@@ -3,6 +3,8 @@ package com.jhkim.evlog.db;
 /** 주행 1건. */
 public class Trip {
     public long id;
+    /** 서버와 맞추는 고유 id. 저장할 때 자동으로 붙습니다. */
+    public String uid = "";
     public long startTs;
     public long endTs;
     /** 주행거리(m) */
@@ -22,6 +24,8 @@ public class Trip {
     /** "car" 또는 "gps" */
     public String source = "gps";
     public String note = "";
+    /** 서버로 올라갔는지 */
+    public boolean synced;
 
     public double km() {
         return distanceM / 1000.0;
