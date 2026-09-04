@@ -1,5 +1,6 @@
 package com.jhkim.evlog.ui;
 
+import android.content.Intent;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -13,6 +14,7 @@ import androidx.annotation.Nullable;
 import androidx.fragment.app.Fragment;
 
 import com.google.android.material.button.MaterialButton;
+import com.jhkim.evlog.DriveActivity;
 import com.jhkim.evlog.R;
 import com.jhkim.evlog.db.Db;
 import com.jhkim.evlog.db.Trip;
@@ -63,6 +65,9 @@ public class DashboardFragment extends Fragment {
         statAvgEff = v.findViewById(R.id.stat_avg_eff);
         statTotalKm = v.findViewById(R.id.stat_total_km);
         btnToggle = v.findViewById(R.id.btn_toggle);
+
+        v.findViewById(R.id.btn_drive).setOnClickListener(b ->
+                startActivity(new Intent(requireContext(), DriveActivity.class)));
 
         chart.setEmptyText(getString(R.string.empty_chart));
 
