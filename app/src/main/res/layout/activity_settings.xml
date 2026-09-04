@@ -149,6 +149,83 @@
                 android:text="시동/부팅 후 자동으로 기록 시작"
                 android:textColor="@color/ink_primary" />
 
+            <TextView
+                style="@style/CardTitle"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="26dp"
+                android:text="NAS 서버 연동" />
+
+            <TextView
+                style="@style/LabelMuted"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="서버 주소 (예: https://evlog.내도메인)" />
+
+            <EditText
+                android:id="@+id/in_server_url"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="6dp"
+                android:background="@drawable/bg_field"
+                android:hint="https://"
+                android:importantForAutofill="no"
+                android:inputType="textUri"
+                android:padding="12dp"
+                android:textColor="@color/ink_primary"
+                android:textColorHint="@color/ink_muted" />
+
+            <TextView
+                style="@style/LabelMuted"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="14dp"
+                android:text="접속 토큰 (docker-compose.yml 의 EVLOG_TOKEN)" />
+
+            <EditText
+                android:id="@+id/in_server_token"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="6dp"
+                android:background="@drawable/bg_field"
+                android:importantForAutofill="no"
+                android:inputType="textPassword"
+                android:padding="12dp"
+                android:textColor="@color/ink_primary" />
+
+            <com.google.android.material.switchmaterial.SwitchMaterial
+                android:id="@+id/sw_sync"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="16dp"
+                android:text="기록이 쌓이면 자동으로 서버에 올리기"
+                android:textColor="@color/ink_primary" />
+
+            <com.google.android.material.switchmaterial.SwitchMaterial
+                android:id="@+id/sw_route"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="6dp"
+                android:text="주행 경로(위치) 함께 기록"
+                android:textColor="@color/ink_primary" />
+
+            <TextView
+                android:id="@+id/txt_sync_status"
+                style="@style/LabelMuted"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:lineSpacingExtra="3dp"
+                android:text="" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btn_sync"
+                style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="10dp"
+                android:text="지금 서버로 올리기" />
+
             <com.google.android.material.button.MaterialButton
                 android:id="@+id/btn_save"
                 android:layout_width="match_parent"
