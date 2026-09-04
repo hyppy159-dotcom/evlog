@@ -112,6 +112,16 @@
             </LinearLayout>
         </com.google.android.material.card.MaterialCardView>
 
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btn_drive"
+            style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="12dp"
+            android:minHeight="56dp"
+            android:text="주행 중 모니터 열기"
+            android:textSize="16sp" />
+
         <!-- 요약 수치 -->
         <com.google.android.material.card.MaterialCardView
             style="@style/EvCard"
