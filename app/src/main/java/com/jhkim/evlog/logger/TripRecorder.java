@@ -63,6 +63,19 @@ public class TripRecorder {
         return active ? (System.currentTimeMillis() - startTs) / 1000L : 0;
     }
 
+    /** 진행 중인 주행의 전비 km/kWh. 아직 계산할 수 없으면 -1 */
+    public double currentEfficiency() {
+        if (!active || distanceM < 200) return -1;
+        double used = -1;
+        if (startWh > 0 && lastWh > 0 && startWh > lastWh) {
+            used = startWh - lastWh;
+        } else if (startSoc >= 0 && lastSoc >= 0 && startSoc > lastSoc) {
+            used = (startSoc - lastSoc) / 100.0 * Prefs.capacityKwh(ctx) * 1000.0;
+        }
+        if (used <= 0) return -1;
+        return (distanceM / 1000.0) / (used / 1000.0);
+    }
+
     public void update(VehicleSnapshot s) {
         long now = s.ts;
         float kmh = s.hasSpeed ? s.speedKmh : 0f;
