@@ -9,12 +9,14 @@ import android.database.sqlite.SQLiteOpenHelper;
 import java.util.ArrayList;
 import java.util.Calendar;
 import java.util.List;
+import java.util.UUID;
 
-/** 주행·충전 기록 저장소. */
+/** 주행·충전·경로 기록 저장소. */
 public class Db extends SQLiteOpenHelper {
 
     private static final String DB_NAME = "evlog.db";
-    private static final int DB_VERSION = 1;
+    /** 2: 서버 연동용 uid·synced 열과 경로점 테이블 추가 */
+    private static final int DB_VERSION = 2;
 
     private static Db instance;
 
@@ -33,6 +35,7 @@ public class Db extends SQLiteOpenHelper {
     public void onCreate(SQLiteDatabase db) {
         db.execSQL("CREATE TABLE trips("
                 + "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                + "uid TEXT NOT NULL DEFAULT '',"
                 + "start_ts INTEGER NOT NULL,"
                 + "end_ts INTEGER NOT NULL,"
                 + "distance_m REAL NOT NULL,"
@@ -48,11 +51,14 @@ public class Db extends SQLiteOpenHelper {
                 + "end_lat REAL NOT NULL,"
                 + "end_lon REAL NOT NULL,"
                 + "source TEXT NOT NULL,"
-                + "note TEXT)");
+                + "note TEXT,"
+                + "synced INTEGER NOT NULL DEFAULT 0)");
         db.execSQL("CREATE INDEX idx_trips_start ON trips(start_ts DESC)");
+        db.execSQL("CREATE INDEX idx_trips_synced ON trips(synced)");
 
         db.execSQL("CREATE TABLE charges("
                 + "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                + "uid TEXT NOT NULL DEFAULT '',"
                 + "start_ts INTEGER NOT NULL,"
                 + "end_ts INTEGER NOT NULL,"
                 + "start_soc REAL NOT NULL,"
@@ -64,19 +70,57 @@ public class Db extends SQLiteOpenHelper {
                 + "lat REAL NOT NULL,"
                 + "lon REAL NOT NULL,"
                 + "manual INTEGER NOT NULL,"
-                + "note TEXT)");
+                + "note TEXT,"
+                + "synced INTEGER NOT NULL DEFAULT 0)");
         db.execSQL("CREATE INDEX idx_charges_start ON charges(start_ts DESC)");
+        db.execSQL("CREATE INDEX idx_charges_synced ON charges(synced)");
+
+        createPoints(db);
+    }
+
+    private void createPoints(SQLiteDatabase db) {
+        db.execSQL("CREATE TABLE IF NOT EXISTS points("
+                + "trip_id INTEGER NOT NULL,"
+                + "seq INTEGER NOT NULL,"
+                + "ts INTEGER NOT NULL,"
+                + "lat REAL NOT NULL,"
+                + "lon REAL NOT NULL,"
+                + "speed_kmh REAL NOT NULL DEFAULT -1,"
+                + "soc REAL NOT NULL DEFAULT -1,"
+                + "PRIMARY KEY(trip_id, seq))");
     }
 
     @Override
     public void onUpgrade(SQLiteDatabase db, int oldV, int newV) {
-        // 아직 스키마 변경 없음. 이후 버전에서 ALTER TABLE 추가.
+        if (oldV < 2) {
+            db.execSQL("ALTER TABLE trips ADD COLUMN uid TEXT NOT NULL DEFAULT ''");
+            db.execSQL("ALTER TABLE trips ADD COLUMN synced INTEGER NOT NULL DEFAULT 0");
+            db.execSQL("ALTER TABLE charges ADD COLUMN uid TEXT NOT NULL DEFAULT ''");
+            db.execSQL("ALTER TABLE charges ADD COLUMN synced INTEGER NOT NULL DEFAULT 0");
+            createPoints(db);
+            // 이미 쌓인 기록에도 고유 id를 붙여 줍니다.
+            db.execSQL("UPDATE trips SET uid = 't' || id || '-' || start_ts WHERE uid = ''");
+            db.execSQL("UPDATE charges SET uid = 'c' || id || '-' || start_ts WHERE uid = ''");
+            db.execSQL("CREATE INDEX IF NOT EXISTS idx_trips_synced ON trips(synced)");
+            db.execSQL("CREATE INDEX IF NOT EXISTS idx_charges_synced ON charges(synced)");
+        }
+    }
+
+    private static String newUid() {
+        return UUID.randomUUID().toString();
     }
 
     // ---------------- 주행 ----------------
 
     public long insertTrip(Trip t) {
+        return insertTrip(t, null);
+    }
+
+    /** 주행과 그 경로를 함께 저장합니다. */
+    public long insertTrip(Trip t, List<TripPoint> route) {
+        if (t.uid == null || t.uid.isEmpty()) t.uid = newUid();
         ContentValues v = new ContentValues();
+        v.put("uid", t.uid);
         v.put("start_ts", t.startTs);
         v.put("end_ts", t.endTs);
         v.put("distance_m", t.distanceM);
@@ -93,38 +137,70 @@ public class Db extends SQLiteOpenHelper {
         v.put("end_lon", t.endLon);
         v.put("source", t.source);
         v.put("note", t.note == null ? "" : t.note);
-        return getWritableDatabase().insert("trips", null, v);
+        v.put("synced", 0);
+
+        SQLiteDatabase db = getWritableDatabase();
+        db.beginTransaction();
+        try {
+            long id = db.insert("trips", null, v);
+            t.id = id;
+            if (id > 0 && route != null && !route.isEmpty()) {
+                int seq = 0;
+                for (TripPoint p : route) {
+                    ContentValues pv = new ContentValues();
+                    pv.put("trip_id", id);
+                    pv.put("seq", seq++);
+                    pv.put("ts", p.ts);
+                    pv.put("lat", p.lat);
+                    pv.put("lon", p.lon);
+                    pv.put("speed_kmh", p.speedKmh);
+                    pv.put("soc", p.soc);
+                    db.insert("points", null, pv);
+                }
+            }
+            db.setTransactionSuccessful();
+            return id;
+        } finally {
+            db.endTransaction();
+        }
     }
 
     public void deleteTrip(long id) {
-        getWritableDatabase().delete("trips", "id=?", new String[]{String.valueOf(id)});
+        SQLiteDatabase db = getWritableDatabase();
+        db.beginTransaction();
+        try {
+            db.delete("points", "trip_id=?", new String[]{String.valueOf(id)});
+            db.delete("trips", "id=?", new String[]{String.valueOf(id)});
+            db.setTransactionSuccessful();
+        } finally {
+            db.endTransaction();
+        }
     }
 
     public List<Trip> listTrips(int limit) {
-        List<Trip> out = new ArrayList<>();
-        Cursor c = getReadableDatabase().rawQuery(
-                "SELECT * FROM trips ORDER BY start_ts DESC LIMIT ?",
-                new String[]{String.valueOf(limit)});
-        try {
-            while (c.moveToNext()) {
-                out.add(readTrip(c));
-            }
-        } finally {
-            c.close();
-        }
-        return out;
+        return queryTrips("SELECT * FROM trips ORDER BY start_ts DESC LIMIT ?",
+                new String[]{String.valueOf(limit)}, false);
+    }
+
+    /** 아직 서버로 안 올라간 주행. */
+    public List<Trip> unsyncedTrips(int limit) {
+        return queryTrips("SELECT * FROM trips WHERE synced=0 ORDER BY start_ts LIMIT ?",
+                new String[]{String.valueOf(limit)}, false);
     }
 
     /** 전비가 계산된 최근 주행을 오래된 것부터 반환(차트용). */
     public List<Trip> recentTripsWithEfficiency(int limit) {
+        return queryTrips("SELECT * FROM trips WHERE used_wh > 0 AND distance_m > 500 "
+                + "ORDER BY start_ts DESC LIMIT ?", new String[]{String.valueOf(limit)}, true);
+    }
+
+    private List<Trip> queryTrips(String sql, String[] args, boolean reverse) {
         List<Trip> out = new ArrayList<>();
-        Cursor c = getReadableDatabase().rawQuery(
-                "SELECT * FROM trips WHERE used_wh > 0 AND distance_m > 500 "
-                        + "ORDER BY start_ts DESC LIMIT ?",
-                new String[]{String.valueOf(limit)});
+        Cursor c = getReadableDatabase().rawQuery(sql, args);
         try {
             while (c.moveToNext()) {
-                out.add(0, readTrip(c));
+                if (reverse) out.add(0, readTrip(c));
+                else out.add(readTrip(c));
             }
         } finally {
             c.close();
@@ -135,6 +211,7 @@ public class Db extends SQLiteOpenHelper {
     private Trip readTrip(Cursor c) {
         Trip t = new Trip();
         t.id = c.getLong(c.getColumnIndexOrThrow("id"));
+        t.uid = c.getString(c.getColumnIndexOrThrow("uid"));
         t.startTs = c.getLong(c.getColumnIndexOrThrow("start_ts"));
         t.endTs = c.getLong(c.getColumnIndexOrThrow("end_ts"));
         t.distanceM = c.getDouble(c.getColumnIndexOrThrow("distance_m"));
@@ -151,13 +228,39 @@ public class Db extends SQLiteOpenHelper {
         t.endLon = c.getDouble(c.getColumnIndexOrThrow("end_lon"));
         t.source = c.getString(c.getColumnIndexOrThrow("source"));
         t.note = c.getString(c.getColumnIndexOrThrow("note"));
+        t.synced = c.getInt(c.getColumnIndexOrThrow("synced")) == 1;
         return t;
+    }
+
+    // ---------------- 경로 ----------------
+
+    public List<TripPoint> pointsFor(long tripId) {
+        List<TripPoint> out = new ArrayList<>();
+        Cursor c = getReadableDatabase().rawQuery(
+                "SELECT ts, lat, lon, speed_kmh, soc FROM points WHERE trip_id=? ORDER BY seq",
+                new String[]{String.valueOf(tripId)});
+        try {
+            while (c.moveToNext()) {
+                out.add(new TripPoint(c.getLong(0), c.getDouble(1), c.getDouble(2),
+                        c.getDouble(3), c.getDouble(4)));
+            }
+        } finally {
+            c.close();
+        }
+        return out;
+    }
+
+    public int pointCount(long tripId) {
+        return (int) scalar("SELECT COUNT(*) FROM points WHERE trip_id=?",
+                new String[]{String.valueOf(tripId)});
     }
 
     // ---------------- 충전 ----------------
 
     public long insertCharge(Charge ch) {
+        if (ch.uid == null || ch.uid.isEmpty()) ch.uid = newUid();
         ContentValues v = new ContentValues();
+        v.put("uid", ch.uid);
         v.put("start_ts", ch.startTs);
         v.put("end_ts", ch.endTs);
         v.put("start_soc", ch.startSoc);
@@ -170,7 +273,10 @@ public class Db extends SQLiteOpenHelper {
         v.put("lon", ch.lon);
         v.put("manual", ch.manual ? 1 : 0);
         v.put("note", ch.note == null ? "" : ch.note);
-        return getWritableDatabase().insert("charges", null, v);
+        v.put("synced", 0);
+        long id = getWritableDatabase().insert("charges", null, v);
+        ch.id = id;
+        return id;
     }
 
     public void deleteCharge(long id) {
@@ -178,14 +284,23 @@ public class Db extends SQLiteOpenHelper {
     }
 
     public List<Charge> listCharges(int limit) {
-        List<Charge> out = new ArrayList<>();
-        Cursor c = getReadableDatabase().rawQuery(
-                "SELECT * FROM charges ORDER BY start_ts DESC LIMIT ?",
+        return queryCharges("SELECT * FROM charges ORDER BY start_ts DESC LIMIT ?",
                 new String[]{String.valueOf(limit)});
+    }
+
+    public List<Charge> unsyncedCharges(int limit) {
+        return queryCharges("SELECT * FROM charges WHERE synced=0 ORDER BY start_ts LIMIT ?",
+                new String[]{String.valueOf(limit)});
+    }
+
+    private List<Charge> queryCharges(String sql, String[] args) {
+        List<Charge> out = new ArrayList<>();
+        Cursor c = getReadableDatabase().rawQuery(sql, args);
         try {
             while (c.moveToNext()) {
                 Charge ch = new Charge();
                 ch.id = c.getLong(c.getColumnIndexOrThrow("id"));
+                ch.uid = c.getString(c.getColumnIndexOrThrow("uid"));
                 ch.startTs = c.getLong(c.getColumnIndexOrThrow("start_ts"));
                 ch.endTs = c.getLong(c.getColumnIndexOrThrow("end_ts"));
                 ch.startSoc = c.getDouble(c.getColumnIndexOrThrow("start_soc"));
@@ -198,12 +313,49 @@ public class Db extends SQLiteOpenHelper {
                 ch.lon = c.getDouble(c.getColumnIndexOrThrow("lon"));
                 ch.manual = c.getInt(c.getColumnIndexOrThrow("manual")) == 1;
                 ch.note = c.getString(c.getColumnIndexOrThrow("note"));
+                ch.synced = c.getInt(c.getColumnIndexOrThrow("synced")) == 1;
                 out.add(ch);
             }
         } finally {
             c.close();
         }
         return out;
+    }
+
+    // ---------------- 서버 동기화 ----------------
+
+    public void markTripsSynced(List<Long> ids) {
+        mark("trips", ids);
+    }
+
+    public void markChargesSynced(List<Long> ids) {
+        mark("charges", ids);
+    }
+
+    private void mark(String table, List<Long> ids) {
+        if (ids == null || ids.isEmpty()) return;
+        SQLiteDatabase db = getWritableDatabase();
+        db.beginTransaction();
+        try {
+            for (Long id : ids) {
+                db.execSQL("UPDATE " + table + " SET synced=1 WHERE id=?", new Object[]{id});
+            }
+            db.setTransactionSuccessful();
+        } finally {
+            db.endTransaction();
+        }
+    }
+
+    public int pendingCount() {
+        return (int) scalar("SELECT (SELECT COUNT(*) FROM trips WHERE synced=0)"
+                + " + (SELECT COUNT(*) FROM charges WHERE synced=0)", null);
+    }
+
+    /** 서버를 새로 연결했을 때 전부 다시 올리도록 표시를 지웁니다. */
+    public void markAllUnsynced() {
+        SQLiteDatabase db = getWritableDatabase();
+        db.execSQL("UPDATE trips SET synced=0");
+        db.execSQL("UPDATE charges SET synced=0");
     }
 
     // ---------------- 집계 ----------------
@@ -266,6 +418,7 @@ public class Db extends SQLiteOpenHelper {
 
     public void clearAll() {
         SQLiteDatabase db = getWritableDatabase();
+        db.execSQL("DELETE FROM points");
         db.execSQL("DELETE FROM trips");
         db.execSQL("DELETE FROM charges");
     }
