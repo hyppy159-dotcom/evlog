@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources xmlns:tools="http://schemas.android.com/tools">
+
+    <style name="Theme.EvLog" parent="Theme.MaterialComponents.NoActionBar">
+        <item name="colorPrimary">@color/series1</item>
+        <item name="colorPrimaryDark">@color/plane</item>
+        <item name="colorSecondary">@color/series1</item>
+        <item name="colorAccent">@color/series1</item>
+        <item name="colorOnPrimary">#FFFFFF</item>
+        <item name="colorSurface">@color/surface</item>
+        <item name="colorOnSurface">@color/ink_primary</item>
+        <item name="android:colorBackground">@color/plane</item>
+        <item name="android:windowBackground">@color/plane</item>
+        <item name="android:textColorPrimary">@color/ink_primary</item>
+        <item name="android:textColorSecondary">@color/ink_secondary</item>
+        <item name="android:statusBarColor" tools:targetApi="21">@color/plane</item>
+        <item name="android:navigationBarColor" tools:targetApi="21">@color/plane</item>
+    </style>
+
+    <style name="EvCard" parent="Widget.MaterialComponents.CardView">
+        <item name="cardBackgroundColor">@color/surface</item>
+        <item name="cardCornerRadius">18dp</item>
+        <item name="cardElevation">0dp</item>
+        <item name="strokeColor">@color/hairline</item>
+        <item name="strokeWidth">1dp</item>
+        <item name="contentPadding">18dp</item>
+        <item name="android:layout_marginBottom">12dp</item>
+    </style>
+
+    <style name="CardTitle">
+        <item name="android:textColor">@color/ink_secondary</item>
+        <item name="android:textSize">13sp</item>
+        <item name="android:letterSpacing">0.03</item>
+        <item name="android:layout_marginBottom">10dp</item>
+    </style>
+
+    <style name="ValueBig">
+        <item name="android:textColor">@color/ink_primary</item>
+        <item name="android:textSize">26sp</item>
+    </style>
+
+    <style name="LabelMuted">
+        <item name="android:textColor">@color/ink_muted</item>
+        <item name="android:textSize">12sp</item>
+    </style>
+</resources>

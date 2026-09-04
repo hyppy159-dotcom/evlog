@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 어두운 차량 화면 기준으로 고른 팔레트 -->
+    <color name="plane">#0D0D0D</color>
+    <color name="surface">#1A1A19</color>
+    <color name="surface_high">#232322</color>
+
+    <color name="ink_primary">#FFFFFF</color>
+    <color name="ink_secondary">#C3C2B7</color>
+    <color name="ink_muted">#898781</color>
+
+    <color name="grid">#2C2C2A</color>
+    <color name="axis">#383835</color>
+    <color name="hairline">#1AFFFFFF</color>
+
+    <!-- 데이터 계열 색 -->
+    <color name="series1">#3987E5</color>
+    <color name="series2">#D95926</color>
+    <color name="series3">#199E70</color>
+
+    <!-- 상태 색: 항상 아이콘/문구와 함께 씁니다 -->
+    <color name="status_good">#0CA30C</color>
+    <color name="status_warning">#FAB219</color>
+    <color name="status_serious">#EC835A</color>
+    <color name="status_critical">#D03B3B</color>
+
+    <color name="ic_launcher_bg">#0D0D0D</color>
+</resources>
