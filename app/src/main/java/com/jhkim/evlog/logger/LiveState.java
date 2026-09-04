@@ -19,6 +19,8 @@ public final class LiveState {
     public static volatile double tripKm;
     public static volatile long tripElapsedS;
     public static volatile float speedKmh = -1;
+    /** 진행 중인 주행의 전비 km/kWh. 계산 불가면 -1 */
+    public static volatile double tripEfficiency = -1;
 
     public static volatile float socPct = -1;
     public static volatile float rangeKm = -1;
@@ -60,6 +62,7 @@ public final class LiveState {
         tripActive = false;
         tripKm = 0;
         tripElapsedS = 0;
+        tripEfficiency = -1;
         speedKmh = -1;
         chargeActive = false;
         chargeKwh = 0;
