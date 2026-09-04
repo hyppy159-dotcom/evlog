@@ -107,7 +107,15 @@ public class DashboardFragment extends Fragment {
             txtRange.setText("—");
         }
 
-        txtSource.setText("데이터 출처: " + LiveState.sourceLabel);
+        String source = "데이터 출처: " + LiveState.sourceLabel;
+        // 차에 붙었는데도 잔량이 안 나오면 이유를 바로 보여줍니다.
+        if (LiveState.carConnected && LiveState.socPct < 0
+                && LiveState.carBatteryStatus != null && !LiveState.carBatteryStatus.isEmpty()
+                && !"정상".equals(LiveState.carBatteryStatus)) {
+            source = source + "\n배터리: " + LiveState.carBatteryStatus
+                    + "\n(메뉴 → 차량 데이터 진단에서 자세히)";
+        }
+        txtSource.setText(source);
 
         if (LiveState.outsideTempC > -100) {
             txtTemp.setText(String.format(Locale.KOREA, "외기 %.1f℃", LiveState.outsideTempC));
