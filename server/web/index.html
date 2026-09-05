@@ -82,10 +82,40 @@
 <div id="login" class="login hide">
   <div class="card">
     <h2 style="font-size:15px;color:var(--ink)">EV 차계부</h2>
-    <p style="color:var(--muted);font-size:13px;margin:0 0 4px">접속 암호를 입력하세요.</p>
-    <input id="token" type="password" autocomplete="current-password" placeholder="토큰">
+    <p style="color:var(--muted);font-size:13px;margin:0 0 4px">아이디와 비밀번호를 넣어 주세요.</p>
+    <input id="loginUser" type="text" autocomplete="username" placeholder="아이디"
+           autocapitalize="off" autocorrect="off" spellcheck="false">
+    <input id="loginPass" type="password" autocomplete="current-password" placeholder="비밀번호">
     <button class="btn" id="loginBtn">들어가기</button>
     <div class="err" id="loginErr"></div>
+  </div>
+</div>
+
+<div id="setup" class="login hide">
+  <div class="card">
+    <h2 style="font-size:15px;color:var(--ink)">처음 오셨네요</h2>
+    <p style="color:var(--muted);font-size:13px;margin:0 0 4px;line-height:1.6">
+      쓸 아이디와 비밀번호를 정해 주세요.<br>이 서버에 처음 한 번만 만듭니다.</p>
+    <input id="setupUser" type="text" autocomplete="username" placeholder="아이디 (영문·숫자, 2~32자)"
+           autocapitalize="off" autocorrect="off" spellcheck="false">
+    <input id="setupPass" type="password" autocomplete="new-password" placeholder="비밀번호 (8자 이상)">
+    <input id="setupPass2" type="password" autocomplete="new-password" placeholder="비밀번호 확인">
+    <button class="btn" id="setupBtn">계정 만들기</button>
+    <div class="err" id="setupErr"></div>
+  </div>
+</div>
+
+<div id="pwdlg" class="login hide" style="position:fixed;inset:0;margin:0;padding:0;
+     background:rgba(0,0,0,.66);z-index:1200;display:flex;align-items:center;justify-content:center">
+  <div class="card" style="width:340px;max-width:calc(100% - 32px)">
+    <h2 style="font-size:15px;color:var(--ink)">비밀번호 바꾸기</h2>
+    <input id="pwNow" type="password" autocomplete="current-password" placeholder="지금 비밀번호">
+    <input id="pwNew" type="password" autocomplete="new-password" placeholder="새 비밀번호 (8자 이상)">
+    <input id="pwNew2" type="password" autocomplete="new-password" placeholder="새 비밀번호 확인">
+    <button class="btn" id="pwSave">바꾸기</button>
+    <button class="btn" id="pwCancel"
+            style="background:transparent;border:1px solid var(--hairline);color:var(--muted)">닫기</button>
+    <div class="err" id="pwErr"></div>
   </div>
 </div>
 
@@ -123,6 +153,7 @@
 
   <p style="color:var(--muted);font-size:12px;text-align:center;padding:6px 0 24px">
     지도 &copy; OpenStreetMap 기여자 ·
+    <a href="#" id="changePw">비밀번호 바꾸기</a> ·
     <a href="#" id="logout">로그아웃</a>
   </p>
 </div>
@@ -175,26 +206,102 @@ function api(path, opts){
   });
 }
 
-function showLogin(){ el("login").classList.remove("hide"); el("app").classList.add("hide"); }
-function showApp(){ el("login").classList.add("hide"); el("app").classList.remove("hide"); }
+function only(which){
+  ["login","setup","app"].forEach(function(id){
+    el(id).classList.toggle("hide", id !== which);
+  });
+}
+function showLogin(){ only("login"); setTimeout(function(){ el("loginUser").focus(); }, 30); }
+function showSetup(){ only("setup"); setTimeout(function(){ el("setupUser").focus(); }, 30); }
+function showApp(){ only("app"); }
+
+// 서버가 보낸 사람이 읽을 수 있는 오류 문구를 꺼냅니다.
+function errText(r, fallback){
+  return r.json().then(function(j){ return (j && j.error) || fallback; },
+                       function(){ return fallback; });
+}
+
+function post(path, obj){
+  return fetch(path, {method:"POST", credentials:"same-origin",
+    headers:{"Content-Type":"application/json"}, body: JSON.stringify(obj)});
+}
 
 el("loginBtn").onclick = function(){
-  var t = el("token").value.trim();
-  if (!t) return;
+  var u = el("loginUser").value.trim(), p = el("loginPass").value;
+  if (!u || !p) { el("loginErr").textContent = "아이디와 비밀번호를 모두 넣어 주세요."; return; }
   el("loginErr").textContent = "";
-  fetch("/login", {method:"POST", credentials:"same-origin",
-      headers:{"Content-Type":"application/json"}, body: JSON.stringify({token:t})})
-    .then(function(r){
-      if (!r.ok) throw new Error("토큰이 맞지 않습니다.");
-      el("token").value = "";
-      showApp(); load();
-    })
-    .catch(function(e){ el("loginErr").textContent = e.message; });
+  el("loginBtn").disabled = true;
+  post("/login", {user:u, pass:p}).then(function(r){
+    el("loginBtn").disabled = false;
+    if (r.ok) { el("loginPass").value = ""; showApp(); load(); return; }
+    if (r.status === 409) { showSetup(); return; }
+    return errText(r, "아이디나 비밀번호가 맞지 않습니다.").then(function(m){
+      el("loginErr").textContent = m;
+    });
+  }).catch(function(e){
+    el("loginBtn").disabled = false;
+    el("loginErr").textContent = "서버에 닿지 못했습니다.";
+  });
 };
-el("token").addEventListener("keydown", function(e){ if (e.key==="Enter") el("loginBtn").click(); });
+["loginUser","loginPass"].forEach(function(id){
+  el(id).addEventListener("keydown", function(e){ if (e.key==="Enter") el("loginBtn").click(); });
+});
+
+el("setupBtn").onclick = function(){
+  var u = el("setupUser").value.trim(), p = el("setupPass").value, p2 = el("setupPass2").value;
+  if (!u || !p) { el("setupErr").textContent = "아이디와 비밀번호를 모두 넣어 주세요."; return; }
+  if (p !== p2) { el("setupErr").textContent = "두 비밀번호가 다릅니다."; return; }
+  if (p.length < 8) { el("setupErr").textContent = "비밀번호는 8자 이상이어야 합니다."; return; }
+  el("setupErr").textContent = "";
+  el("setupBtn").disabled = true;
+  post("/setup", {user:u, pass:p}).then(function(r){
+    el("setupBtn").disabled = false;
+    if (r.ok) {
+      el("setupPass").value = ""; el("setupPass2").value = "";
+      showApp(); load(); return;
+    }
+    return errText(r, "계정을 만들지 못했습니다.").then(function(m){
+      el("setupErr").textContent = m;
+    });
+  }).catch(function(){
+    el("setupBtn").disabled = false;
+    el("setupErr").textContent = "서버에 닿지 못했습니다.";
+  });
+};
+["setupUser","setupPass","setupPass2"].forEach(function(id){
+  el(id).addEventListener("keydown", function(e){ if (e.key==="Enter") el("setupBtn").click(); });
+});
+
+el("changePw").onclick = function(e){
+  e.preventDefault();
+  el("pwErr").textContent = "";
+  el("pwNow").value = el("pwNew").value = el("pwNew2").value = "";
+  el("pwdlg").classList.remove("hide");
+  setTimeout(function(){ el("pwNow").focus(); }, 30);
+};
+el("pwCancel").onclick = function(){ el("pwdlg").classList.add("hide"); };
+el("pwSave").onclick = function(){
+  var cur = el("pwNow").value, n = el("pwNew").value, n2 = el("pwNew2").value;
+  if (n !== n2) { el("pwErr").textContent = "새 비밀번호가 서로 다릅니다."; return; }
+  if (n.length < 8) { el("pwErr").textContent = "새 비밀번호는 8자 이상이어야 합니다."; return; }
+  el("pwSave").disabled = true;
+  post("/auth/password", {current:cur, "new":n}).then(function(r){
+    el("pwSave").disabled = false;
+    if (r.ok) {
+      el("pwNow").value = el("pwNew").value = el("pwNew2").value = "";
+      el("pwdlg").classList.add("hide");
+      return;
+    }
+    return errText(r, "바꾸지 못했습니다.").then(function(m){ el("pwErr").textContent = m; });
+  }).catch(function(){
+    el("pwSave").disabled = false;
+    el("pwErr").textContent = "서버에 닿지 못했습니다.";
+  });
+};
+
 el("logout").onclick = function(e){
   e.preventDefault();
-  fetch("/logout", {method:"POST", credentials:"same-origin"}).then(showLogin);
+  fetch("/logout", {method:"POST", credentials:"same-origin"}).then(showLogin, showLogin);
 };
 el("reload").onclick = function(){ load(); };
 
@@ -382,8 +489,15 @@ function load(){
 
 window.addEventListener("resize", function(){ renderChart(state.trips); });
 
-// 쿠키가 살아 있으면 바로 들어가고, 아니면 로그인 화면
-api("/api/v1/stats").then(function(){ showApp(); load(); }).catch(function(){});
+// 계정이 아직 없으면 만들기 화면, 로그인이 살아 있으면 바로 대시보드.
+fetch("/auth/state", {credentials:"same-origin"})
+  .then(function(r){ return r.json(); })
+  .then(function(s){
+    if (s.setup_needed) showSetup();
+    else if (s.logged_in) { showApp(); load(); }
+    else showLogin();
+  })
+  .catch(function(){ showLogin(); });
 </script>
 </body>
 </html>
