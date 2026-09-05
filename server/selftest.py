@@ -17,24 +17,39 @@ TOKEN = sys.argv[2] if len(sys.argv) > 2 else "test"
 
 opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 failures = []
+cookies = {}
 
 
-def call(method, path, body=None, token=TOKEN, expect=200):
+def call(method, path, body=None, token=TOKEN, expect=200, cookie=False, label=None):
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(BASE + path, data=data, method=method)
     if token:
         req.add_header("Authorization", "Bearer " + token)
+    if cookie and cookies:
+        req.add_header("Cookie", "; ".join("%s=%s" % kv for kv in cookies.items()))
     if data:
         req.add_header("Content-Type", "application/json")
     try:
         with opener.open(req, timeout=20) as r:
-            got, payload = r.status, json.loads(r.read().decode())
+            got, payload, headers = r.status, json.loads(r.read().decode()), r.headers
     except urllib.error.HTTPError as e:
-        got, payload = e.code, {}
+        got, headers = e.code, e.headers
+        try:
+            payload = json.loads(e.read().decode())
+        except Exception:
+            payload = {}
+    for raw in headers.get_all("Set-Cookie") or []:
+        name, _, rest = raw.partition("=")
+        value = rest.split(";", 1)[0]
+        if value:
+            cookies[name.strip()] = value
+        else:
+            cookies.pop(name.strip(), None)
     ok = got == expect
-    print(("  OK   " if ok else "  FAIL ") + "%-6s %-34s → %s (기대 %s)" % (method, path, got, expect))
+    print(("  OK   " if ok else "  FAIL ") + "%-6s %-34s → %s (기대 %s)"
+          % (method, label or path, got, expect))
     if not ok:
-        failures.append(path)
+        failures.append(label or path)
     return payload
 
 
@@ -123,11 +138,65 @@ def main():
         failures.append("point filtering")
         print("  FAIL 이상한 좌표가 걸러지지 않았습니다:", bad.get("points"))
 
-    print("\n[6] 웹 페이지")
+    print("\n[6] 웹 아이디/비밀번호 로그인")
+    st = call("GET", "/auth/state", token=None)
+    if not st.get("setup_needed"):
+        failures.append("setup_needed")
+        print("  FAIL 새 DB인데 계정 만들기가 필요하다고 하지 않습니다:", st)
+    # 계정이 없으면 로그인은 409로 '먼저 만드세요'
+    call("POST", "/login", {"user": "junhyung", "pass": "whatever12"},
+         token=None, expect=409, label="/login (계정 없음)")
+    # 규칙에 안 맞는 계정은 거부
+    call("POST", "/setup", {"user": "a", "pass": "longenough12"},
+         token=None, expect=400, label="/setup (짧은 아이디)")
+    call("POST", "/setup", {"user": "junhyung", "pass": "short"},
+         token=None, expect=400, label="/setup (짧은 비번)")
+    # 제대로 만들면 바로 로그인된 상태의 쿠키를 받습니다
+    call("POST", "/setup", {"user": "JunHyung", "pass": "correct-horse-1"},
+         token=None, expect=200, label="/setup (정상)")
+    if not cookies.get("evlog_sid"):
+        failures.append("setup cookie")
+        print("  FAIL 세션 쿠키를 받지 못했습니다")
+    # 두 번째 계정은 못 만듭니다
+    call("POST", "/setup", {"user": "someone", "pass": "another-pass-1"},
+         token=None, expect=409, label="/setup (두 번째)")
+    # 쿠키만으로 조회가 됩니다 (토큰 없이)
+    call("GET", "/api/v1/stats", token=None, cookie=True, expect=200,
+         label="/api/v1/stats (쿠키)")
+    st = call("GET", "/auth/state", token=None, cookie=True, label="/auth/state (로그인됨)")
+    if not st.get("logged_in") or st.get("user") != "junhyung":
+        failures.append("auth state")
+        print("  FAIL 로그인 상태가 이상합니다:", st)
+    # 틀린 비밀번호
+    call("POST", "/login", {"user": "junhyung", "pass": "wrong-password"},
+         token=None, expect=401, label="/login (틀린 비번)")
+    call("POST", "/login", {"user": "nobody", "pass": "correct-horse-1"},
+         token=None, expect=401, label="/login (없는 아이디)")
+    # 맞는 비밀번호 — 아이디 대소문자는 가리지 않습니다
+    call("POST", "/login", {"user": "JUNHYUNG", "pass": "correct-horse-1"},
+         token=None, expect=200, label="/login (정상)")
+    # 비밀번호 바꾸기
+    call("POST", "/auth/password", {"current": "nope", "new": "brand-new-pass-2"},
+         token=None, cookie=True, expect=401, label="/auth/password (현재 비번 틀림)")
+    call("POST", "/auth/password", {"current": "correct-horse-1", "new": "short"},
+         token=None, cookie=True, expect=400, label="/auth/password (짧음)")
+    call("POST", "/auth/password", {"current": "correct-horse-1", "new": "brand-new-pass-2"},
+         token=None, cookie=True, expect=200, label="/auth/password (정상)")
+    call("POST", "/login", {"user": "junhyung", "pass": "correct-horse-1"},
+         token=None, expect=401, label="/login (옛 비번은 막힘)")
+    call("POST", "/login", {"user": "junhyung", "pass": "brand-new-pass-2"},
+         token=None, expect=200, label="/login (새 비번)")
+    # 로그아웃하면 쿠키가 죽습니다
+    call("POST", "/logout", token=None, cookie=True, expect=200)
+    call("GET", "/api/v1/stats", token=None, cookie=True, expect=401,
+         label="/api/v1/stats (로그아웃 뒤)")
+
+    print("\n[7] 웹 페이지")
     req = urllib.request.Request(BASE + "/")
     with opener.open(req, timeout=10) as r:
         html = r.read().decode()
-    for needle in ["EV 차계부", "leaflet", "api/v1/stats"]:
+    for needle in ["EV 차계부", "leaflet", "api/v1/stats", "loginUser", "setupPass2",
+                   "auth/state", "비밀번호"]:
         ok = needle in html
         print(("  OK   " if ok else "  FAIL ") + "index.html 에 '%s' 있음" % needle)
         if not ok:

@@ -5,13 +5,21 @@ EV 차계부 서버 — 시놀로지 NAS의 도커에서 돌아가는 작은 기
 파이썬 표준 라이브러리만 씁니다. 설치할 패키지가 없어서 이미지가 가볍고,
 NAS에서 빌드가 몇 초면 끝납니다. 데이터는 SQLite 파일 하나에 들어갑니다.
 
+로그인은 두 가지로 나뉩니다.
+  · 앱(차·휴대폰) → Authorization: Bearer <EVLOG_TOKEN>
+  · 웹페이지     → 아이디 / 비밀번호. 처음 열었을 때 계정을 한 번 만듭니다.
+                   비밀번호는 PBKDF2-SHA256으로 해시해서 저장하며 원문은 남지 않습니다.
+
 환경 변수
-  EVLOG_TOKEN  필수. 앱과 웹이 함께 쓰는 접속 암호(긴 무작위 문자열).
-  EVLOG_DB     기본 /data/evlog.db
-  EVLOG_PORT   기본 8080
+  EVLOG_TOKEN        필수. 앱이 서버에 기록을 올릴 때 쓰는 긴 무작위 문자열.
+  EVLOG_DB           기본 /data/evlog.db
+  EVLOG_PORT         기본 8080
+  EVLOG_RESET_LOGIN  1로 두고 재시작하면 웹 계정을 지웁니다(비밀번호를 잊었을 때).
+                     지운 뒤에는 다시 0으로 되돌려 두세요.
 """
 
 import gzip
+import hashlib
 import hmac
 import json
 import os
@@ -27,11 +35,20 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 DB_PATH = os.environ.get("EVLOG_DB", "/data/evlog.db")
 PORT = int(os.environ.get("EVLOG_PORT", "8080"))
 TOKEN = os.environ.get("EVLOG_TOKEN", "")
+RESET_LOGIN = os.environ.get("EVLOG_RESET_LOGIN", "").strip().lower() in ("1", "true", "yes")
 WEB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
-COOKIE_NAME = "evlog_token"
+COOKIE_NAME = "evlog_sid"
+LEGACY_COOKIE = "evlog_token"  # 예전 토큰 쿠키 — 지우기만 합니다.
 MAX_BODY = 32 * 1024 * 1024  # 32MB — 긴 주행의 경로점까지 넉넉히
 
+SESSION_DAYS = 30
+PBKDF2_ROUNDS = 200_000
+MIN_PASSWORD = 8
+USER_RE = re.compile(r"^[A-Za-z0-9._-]{2,32}$")
+
 _db_lock = threading.Lock()
+_fail_lock = threading.Lock()
+_fails = {}  # ip -> [횟수, 처음 실패 시각]
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS trips(
@@ -86,6 +103,20 @@ CREATE TABLE IF NOT EXISTS charges(
   created_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_charges_start ON charges(start_ts DESC);
+
+CREATE TABLE IF NOT EXISTS users(
+  username TEXT PRIMARY KEY,
+  salt TEXT NOT NULL,
+  hash TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS sessions(
+  sid TEXT PRIMARY KEY,
+  username TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL
+);
 """
 
 
@@ -134,6 +165,90 @@ UID_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,64}$")
 
 def valid_uid(v):
     return isinstance(v, str) and bool(UID_RE.match(v))
+
+
+# --------------------------------------------------------------- 계정
+
+def hash_password(password, salt=None):
+    """비밀번호를 소금과 함께 20만 번 늘려 해시합니다. 원문은 저장하지 않습니다."""
+    if salt is None:
+        salt = secrets.token_hex(16)
+    digest = hashlib.pbkdf2_hmac(
+        "sha256", password.encode("utf-8"), salt.encode("utf-8"), PBKDF2_ROUNDS)
+    return salt, digest.hex()
+
+
+def user_count(conn):
+    return conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+
+
+def create_user(conn, username, password):
+    salt, digest = hash_password(password)
+    conn.execute("INSERT INTO users(username, salt, hash, created_at) VALUES(?,?,?,?)",
+                 (username, salt, digest, int(time.time() * 1000)))
+
+
+def set_password(conn, username, password):
+    salt, digest = hash_password(password)
+    conn.execute("UPDATE users SET salt=?, hash=? WHERE username=?", (salt, digest, username))
+    # 비밀번호를 바꾸면 다른 기기의 로그인은 모두 끊습니다.
+    conn.execute("DELETE FROM sessions WHERE username=?", (username,))
+
+
+def check_password(conn, username, password):
+    row = conn.execute("SELECT salt, hash FROM users WHERE username=?", (username,)).fetchone()
+    if not row:
+        # 없는 아이디도 있는 아이디와 같은 시간이 걸리게 해서 계정 존재 여부를 숨깁니다.
+        hash_password(password, "0" * 32)
+        return False
+    _, digest = hash_password(password, row["salt"])
+    return hmac.compare_digest(digest, row["hash"])
+
+
+def new_session(conn, username):
+    sid = secrets.token_urlsafe(32)
+    now = int(time.time() * 1000)
+    conn.execute("INSERT INTO sessions(sid, username, created_at, expires_at) VALUES(?,?,?,?)",
+                 (sid, username, now, now + SESSION_DAYS * 86400 * 1000))
+    conn.execute("DELETE FROM sessions WHERE expires_at < ?", (now,))
+    return sid
+
+
+def session_user(conn, sid):
+    if not sid:
+        return None
+    row = conn.execute("SELECT username, expires_at FROM sessions WHERE sid=?", (sid,)).fetchone()
+    if not row or row["expires_at"] < int(time.time() * 1000):
+        return None
+    return row["username"]
+
+
+def too_many_failures(ip):
+    """같은 곳에서 10분 안에 8번 틀리면 잠깐 막습니다."""
+    now = time.time()
+    with _fail_lock:
+        rec = _fails.get(ip)
+        if rec and now - rec[1] > 600:
+            rec = None
+        return bool(rec and rec[0] >= 8)
+
+
+def note_failure(ip):
+    now = time.time()
+    with _fail_lock:
+        rec = _fails.get(ip)
+        if not rec or now - rec[1] > 600:
+            _fails[ip] = [1, now]
+        else:
+            rec[0] += 1
+        if len(_fails) > 500:
+            for k in [k for k, v in _fails.items() if now - v[1] > 600]:
+                _fails.pop(k, None)
+
+
+def clear_failures(ip):
+    with _fail_lock:
+        _fails.pop(ip, None)
 
 
 # --------------------------------------------------------------- 저장
@@ -316,29 +431,58 @@ class Handler(BaseHTTPRequestHandler):
                 return b""
         return data
 
-    def cookie_token(self):
+    def cookie(self, name):
         raw = self.headers.get("Cookie")
         if not raw:
             return None
         try:
             c = SimpleCookie()
             c.load(raw)
-            if COOKIE_NAME in c:
-                return c[COOKIE_NAME].value
+            if name in c:
+                return c[name].value
         except Exception:
             pass
         return None
 
-    def authorized(self):
+    def bearer_ok(self):
+        """앱(차·휴대폰)이 기록을 올릴 때 쓰는 토큰."""
         auth = self.headers.get("Authorization") or ""
-        supplied = None
-        if auth.lower().startswith("bearer "):
-            supplied = auth[7:].strip()
-        if not supplied:
-            supplied = self.cookie_token()
-        if not supplied:
+        if not auth.lower().startswith("bearer "):
             return False
-        return hmac.compare_digest(supplied, TOKEN)
+        return hmac.compare_digest(auth[7:].strip(), TOKEN)
+
+    def web_user(self):
+        """웹페이지 쿠키가 살아 있으면 아이디를, 아니면 None."""
+        sid = self.cookie(COOKIE_NAME)
+        if not sid:
+            return None
+        with connect() as conn:
+            return session_user(conn, sid)
+
+    def authorized(self):
+        return self.bearer_ok() or self.web_user() is not None
+
+    def client_ip(self):
+        fwd = self.headers.get("X-Forwarded-For")
+        if fwd:
+            return fwd.split(",")[0].strip()[:60]
+        return self.client_address[0]
+
+    def is_https(self):
+        return (self.headers.get("X-Forwarded-Proto") or "").lower() == "https"
+
+    def session_cookie(self, sid, max_age=None):
+        secure = "; Secure" if self.is_https() else ""
+        age = SESSION_DAYS * 86400 if max_age is None else max_age
+        return "%s=%s; Path=/; HttpOnly; SameSite=Lax; Max-Age=%d%s" % (
+            COOKIE_NAME, sid, age, secure)
+
+    def json_body(self):
+        try:
+            obj = json.loads(self.read_body().decode("utf-8"))
+            return obj if isinstance(obj, dict) else {}
+        except Exception:
+            return {}
 
     # ---- 라우팅 ----
 
@@ -353,6 +497,16 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/healthz":
             return self.send_json({"ok": True})
+
+        if path == "/auth/state":
+            with connect() as conn:
+                need_setup = user_count(conn) == 0
+            who = None if need_setup else self.web_user()
+            return self.send_json({
+                "setup_needed": need_setup,
+                "logged_in": who is not None,
+                "user": who,
+            })
 
         if path in ("/", "/index.html"):
             return self.serve_web("index.html")
@@ -397,24 +551,23 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         path = self.path.split("?", 1)[0]
 
+        if path == "/setup":
+            return self.do_setup()
+
         if path == "/login":
-            body = self.read_body()
-            supplied = ""
-            try:
-                supplied = json.loads(body.decode("utf-8")).get("token", "")
-            except Exception:
-                supplied = ""
-            if not supplied or not hmac.compare_digest(supplied, TOKEN):
-                time.sleep(0.5)  # 무차별 대입 늦추기
-                return self.send_json({"error": "invalid token"}, 401)
-            secure = "; Secure" if (self.headers.get("X-Forwarded-Proto") == "https") else ""
-            cookie = "%s=%s; Path=/; HttpOnly; SameSite=Lax; Max-Age=31536000%s" % (
-                COOKIE_NAME, supplied, secure)
-            return self.send_json({"ok": True}, 200, {"Set-Cookie": cookie})
+            return self.do_login()
+
+        if path == "/auth/password":
+            return self.do_change_password()
 
         if path == "/logout":
+            sid = self.cookie(COOKIE_NAME)
+            if sid:
+                with _db_lock, connect() as conn:
+                    conn.execute("DELETE FROM sessions WHERE sid=?", (sid,))
+                    conn.commit()
             return self.send_json({"ok": True}, 200, {
-                "Set-Cookie": "%s=; Path=/; HttpOnly; Max-Age=0" % COOKIE_NAME})
+                "Set-Cookie": self.session_cookie("", 0)})
 
         if not self.authorized():
             return self.send_json({"error": "unauthorized"}, 401)
@@ -439,6 +592,73 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({"ok": True, "trips": nt, "points": npoints, "charges": nc})
 
         return self.send_json({"error": "not found"}, 404)
+
+    # ---- 로그인 ----
+
+    def do_setup(self):
+        """계정이 하나도 없을 때 딱 한 번, 아이디와 비밀번호를 정합니다."""
+        body = self.json_body()
+        username = str(body.get("user", "")).strip().lower()
+        password = str(body.get("pass", ""))
+        if not USER_RE.match(username):
+            return self.send_json(
+                {"error": "아이디는 영문·숫자·. _ - 만 써서 2~32자로 지어 주세요."}, 400)
+        if len(password) < MIN_PASSWORD:
+            return self.send_json(
+                {"error": "비밀번호는 %d자 이상이어야 합니다." % MIN_PASSWORD}, 400)
+        with _db_lock, connect() as conn:
+            if user_count(conn) > 0:
+                return self.send_json({"error": "이미 계정이 있습니다."}, 409)
+            create_user(conn, username, password)
+            sid = new_session(conn, username)
+            conn.commit()
+        return self.send_json({"ok": True, "user": username}, 200,
+                              {"Set-Cookie": self.session_cookie(sid)})
+
+    def do_login(self):
+        ip = self.client_ip()
+        if too_many_failures(ip):
+            time.sleep(1.0)
+            return self.send_json(
+                {"error": "여러 번 틀렸습니다. 10분 뒤에 다시 해 주세요."}, 429)
+        body = self.json_body()
+        username = str(body.get("user", "")).strip().lower()
+        password = str(body.get("pass", ""))
+        with connect() as conn:
+            if user_count(conn) == 0:
+                return self.send_json({"error": "setup required", "setup_needed": True}, 409)
+            ok = bool(username) and bool(password) and check_password(conn, username, password)
+        if not ok:
+            note_failure(ip)
+            time.sleep(0.5)
+            return self.send_json({"error": "아이디나 비밀번호가 맞지 않습니다."}, 401)
+        clear_failures(ip)
+        with _db_lock, connect() as conn:
+            sid = new_session(conn, username)
+            conn.commit()
+        return self.send_json({"ok": True, "user": username}, 200,
+                              {"Set-Cookie": self.session_cookie(sid)})
+
+    def do_change_password(self):
+        who = self.web_user()
+        if not who:
+            return self.send_json({"error": "unauthorized"}, 401)
+        body = self.json_body()
+        current = str(body.get("current", ""))
+        fresh = str(body.get("new", ""))
+        if len(fresh) < MIN_PASSWORD:
+            return self.send_json(
+                {"error": "새 비밀번호는 %d자 이상이어야 합니다." % MIN_PASSWORD}, 400)
+        with connect() as conn:
+            if not check_password(conn, who, current):
+                note_failure(self.client_ip())
+                time.sleep(0.5)
+                return self.send_json({"error": "지금 비밀번호가 맞지 않습니다."}, 401)
+        with _db_lock, connect() as conn:
+            set_password(conn, who, fresh)
+            sid = new_session(conn, who)
+            conn.commit()
+        return self.send_json({"ok": True}, 200, {"Set-Cookie": self.session_cookie(sid)})
 
     # ---- 정적 파일 ----
 
@@ -465,6 +685,18 @@ def main():
             "        재시작하면 바뀌니 docker-compose.yml 에 넣어 주세요.\n"
             "        임시 토큰: %s\n\n" % TOKEN)
     init_db()
+    if RESET_LOGIN:
+        with connect() as conn:
+            conn.execute("DELETE FROM sessions")
+            conn.execute("DELETE FROM users")
+            conn.commit()
+        sys.stderr.write(
+            "[알림] EVLOG_RESET_LOGIN 때문에 웹 계정을 지웠습니다.\n"
+            "        웹페이지를 열어 아이디·비밀번호를 새로 정하고,\n"
+            "        그 뒤 이 환경 변수는 다시 0으로 되돌려 주세요.\n")
+    with connect() as conn:
+        if user_count(conn) == 0:
+            sys.stderr.write("[알림] 웹 계정이 없습니다. 웹페이지를 열면 처음에 만들게 됩니다.\n")
     sys.stderr.write("EV 차계부 서버 시작 — 포트 %d, DB %s\n" % (PORT, DB_PATH))
     ThreadingHTTPServer(("0.0.0.0", PORT), Handler).serve_forever()
 
